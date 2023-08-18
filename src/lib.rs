@@ -1,18 +1,89 @@
 #![cfg_attr(not(test), no_std)]
-
-/*
-    SB = 0x10,
-    SW = 0x20,
-    SM = 0x30,
-    RM = 0x40,
-    RR = 0x50,
-    WR = 0x60,
-    EX = 0x80,
-    HR = 0xd0,
-    HS = 0xe0,
-    RT = 0xf0,
-
-*/
+//! A simple crate for communicating with the magnetic sensor mlx90393.
+//! 
+//! To communicate with the sensor `Magnetometer` needs an interface that implements
+//! `Tranceive`. This is already implemented for `SPIInterface` and `I2CInterface`.
+//! Examples of using them are given below:
+//! # Examples 
+//! ## Using I2C
+//! ```
+//! use embedded_hal::blocking::{i2c::WriteRead, delay::DelayMs};
+//! use mlx90393::{I2CInterface, Magnetometer};
+//! 
+//! pub fn example_i2c<E, WR>(i2c: &mut WR, delay: &mut impl DelayMs<u32>) -> Result<(), mlx90393::Error<E>>
+//! where
+//!     WR: WriteRead<Error = E>,
+//! {
+//!     let i2c_interface = I2CInterface { i2c, address: 0x18 };
+//!     let mut sensor = Magnetometer::default_settings(i2c_interface)?;
+//!     sensor.set_resolution(mlx90393::Resolution::RES4)?;
+//!     sensor.set_oversampling_ratio(mlx90393::OverSamplingRatio::OSR8)?;
+//!     sensor.set_filter(mlx90393::DigitalFilter::DF8)?;
+//! 
+//!     match sensor.do_measurement(delay) {
+//!         Ok((t, x, y, z)) => {
+//!             let angle = libm::atan2f(y as f32, x as f32);
+//!             // Do stuff with the data...
+//!         }
+//!         Err(e) => {
+//!             // Handle error.
+//!         }
+//!     }
+//! 
+//!     // You can also start a measurement and collect it later.
+//!     sensor.start_measurement();
+//! 
+//!     // Do other stuff
+//! 
+//!     // If it's not done it will return error and you will try to collect it later.
+//!     let (t, x, y, z) = sensor.collect_measurement()?;
+//! 
+//!     Ok(())
+//! }
+//! ```
+//! ## Using SPI
+//! ```
+//! use defmt::info;
+//! use embedded_hal::{blocking::{spi::Transfer, delay::DelayMs}, digital::v2::OutputPin};
+//! use mlx90393::{Magnetometer, SPIInterface};
+//! 
+//! pub fn example_spi<E, WR>(
+//!     spi: &mut WR,
+//!     delay: &mut impl DelayMs<u32>,
+//!     cs_pin: impl OutputPin,
+//! ) -> Result<(), mlx90393::Error<E>>
+//! where
+//!     WR: Transfer<u8, Error = E>,
+//! {
+//!     let spi_interface = SPIInterface { spi, cs: cs_pin };
+//!     let mut sensor = Magnetometer::default_settings(spi_interface)?;
+//!     sensor.set_resolution(mlx90393::Resolution::RES4)?;
+//!     sensor.set_oversampling_ratio(mlx90393::OverSamplingRatio::OSR8)?;
+//!     sensor.set_filter(mlx90393::DigitalFilter::DF8)?;
+//! 
+//!     match sensor.do_measurement(delay) {
+//!         Ok((t, x, y, z)) => {
+//!             let angle = libm::atan2f(y as f32, x as f32);
+//!             // Do stuff with the data...
+//!             info!("{} {} {} {}", x, y, z, t);
+//!             info!("angle = {}", angle * 180.0 / core::f32::consts::PI);
+//!         }
+//!         Err(e) => {
+//!             // Handle error.
+//!         }
+//!     }
+//! 
+//!     // You can also start a measurement and collect it later.
+//!     sensor.start_measurement();
+//! 
+//!     // Do other stuff
+//! 
+//!     // If it's not done it will return error and you will try to collect it later.
+//!     let (t, x, y, z) = sensor.collect_measurement()?;
+//! 
+//!     Ok(())
+//! }
+//! ```
 
 use embedded_hal::{blocking::delay::DelayMs, digital::v2::OutputPin};
 
@@ -55,6 +126,9 @@ pub enum Gain {
     X1,
 }
 
+/// The ADC gives a 19 bit value but the sensor gives a 16 bit value 
+/// and the resolution determines which part gets included in the 16 bit value 
+/// where Resolution::RES8 results in the most MSb being included.
 #[derive(Clone, Copy, Debug)]
 pub enum Resolution {
     RES1 = 0,
@@ -63,6 +137,8 @@ pub enum Resolution {
     RES8,
 }
 
+/// All the available filters. Using higher filters leads to less noise but takes
+/// exponentially more time to compute. The exact compute time is in `TCONV`.
 #[derive(Clone, Copy, Debug)]
 pub enum DigitalFilter {
     DF1 = 0,
@@ -75,6 +151,7 @@ pub enum DigitalFilter {
     DF8,
 }
 
+/// Higher oversampling leads to less noise but takes more time to comupte.
 #[derive(Clone, Copy, Debug)]
 pub enum OverSamplingRatio {
     OSR1 = 0,
@@ -90,7 +167,8 @@ pub enum Axis {
     Z,
 }
 
-const TCONV: [[f32; 4]; 8] = [
+/// `TCONV[DigitalFiltere][OversamplingRatio] = ` the convertion time in ms for a single axis.
+pub const TCONV: [[f32; 4]; 8] = [
     [1.27, 1.84, 3.00, 5.30],
     [1.46, 2.23, 3.76, 6.84],
     [1.84, 3.00, 5.30, 9.91],
@@ -176,26 +254,15 @@ where
         }
     }
 
+    /// New magnetometer driver with some valid and reasonable settings.
     pub fn default_settings(
         protocol: P,
-        gain: Gain,
-        resolution: Resolution,
-        filter: DigitalFilter,
-        osr: OverSamplingRatio,
     ) -> Result<Magnetometer<P>, Error<E>> {
-        let mut s = Magnetometer {
-            interface: protocol,
-            gain: Gain::X5,
-            resolution_x: Resolution::RES1,
-            resolution_y: Resolution::RES1,
-            resolution_z: Resolution::RES1,
-            digital_filter: DigitalFilter::DF1,
-            oversampling_ratio: OverSamplingRatio::OSR1,
-        };
-        s.set_gain(gain)?;
-        s.set_resolution(resolution)?;
-        s.set_filter(filter)?;
-        s.set_oversampling_ratio(osr)?;
+        let mut s = Self::new_raw(protocol);
+        s.set_gain(Gain::X5)?;
+        s.set_resolution(Resolution::RES4)?;
+        s.set_filter(DigitalFilter::DF3)?;
+        s.set_oversampling_ratio(OverSamplingRatio::OSR2)?;
         Ok(s)
     }
 
