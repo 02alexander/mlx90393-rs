@@ -1,4 +1,4 @@
-#![cfg_attr(not(test), no_std)]
+#![no_std]
 //! A simple crate for communicating with the magnetic sensor mlx90393.
 //! 
 //! To communicate with the sensor `Magnetometer` needs an interface that implements
@@ -6,7 +6,7 @@
 //! Examples of using them are given below:
 //! # Examples 
 //! ## Using I2C
-//! ```
+//! ```no_run
 //! use embedded_hal::blocking::{i2c::WriteRead, delay::DelayMs};
 //! use mlx90393::{I2CInterface, Magnetometer};
 //! 
@@ -22,7 +22,6 @@
 //! 
 //!     match sensor.do_measurement(delay) {
 //!         Ok((t, x, y, z)) => {
-//!             let angle = libm::atan2f(y as f32, x as f32);
 //!             // Do stuff with the data...
 //!         }
 //!         Err(e) => {
@@ -42,7 +41,7 @@
 //! }
 //! ```
 //! ## Using SPI
-//! ```
+//! ```no_run
 //! use defmt::info;
 //! use embedded_hal::{blocking::{spi::Transfer, delay::DelayMs}, digital::v2::OutputPin};
 //! use mlx90393::{Magnetometer, SPIInterface};
@@ -63,10 +62,7 @@
 //! 
 //!     match sensor.do_measurement(delay) {
 //!         Ok((t, x, y, z)) => {
-//!             let angle = libm::atan2f(y as f32, x as f32);
 //!             // Do stuff with the data...
-//!             info!("{} {} {} {}", x, y, z, t);
-//!             info!("angle = {}", angle * 180.0 / core::f32::consts::PI);
 //!         }
 //!         Err(e) => {
 //!             // Handle error.
