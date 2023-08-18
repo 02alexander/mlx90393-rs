@@ -100,11 +100,22 @@ pub enum Axis {
     Z,
 }
 
+const TCONV: [[f32; 4]; 8] = [
+    [1.27, 1.84, 3.00, 5.30],
+    [1.46, 2.23, 3.76, 6.84],
+    [1.84, 3.00, 5.30, 9.91],
+    [2.61, 4.53, 8.37, 16.05],
+    [4.15, 7.60, 14.52, 28.34],
+    [7.22, 13.75, 26.80, 52.92],
+    [13.36, 26.04, 51.38, 102.07],
+    [25.65, 50.61, 100.53, 200.37],
+];
+
 impl<'a, D> Magnetometer<'a, D>
 where
     D: embedded_hal::blocking::i2c::WriteRead,
 {
-    pub fn new_raw(address: u8, i2c: &'a mut D) -> Magnetometer<'a, D> {
+    pub fn new(address: u8, i2c: &'a mut D) -> Magnetometer<'a, D> {
         Magnetometer {
             address,
             i2c,
@@ -148,6 +159,16 @@ where
         Ok(())
     }
 
+    pub fn set_gain(&mut self, gain: Gain) -> Result<(), Error> {
+        let reg = self.memory_read(0x02)?;
+        let offset = 4;
+        let mask = !((0b111 as u16) << offset);
+        let new_reg = (reg & mask) | ((gain as u16) << offset);
+        self.memory_write(0x00, new_reg)?;
+        self.gain = gain;
+        Ok(())
+    }
+
     /// Sets the digital filter. Higher value on filter leads to more accurate values but also takes more time.
     pub fn set_filter(&mut self, filter: DigitalFilter) -> Result<(), Error> {
         let reg = self.memory_read(0x02)?;
@@ -155,32 +176,18 @@ where
         let mask = !((0b1111 as u16) << offset);
         let new_reg = (reg & mask) | ((filter as u16) << offset);
         self.memory_write(0x02, new_reg)?;
+        self.digital_filter = filter;
         Ok(())
     }
 
     /// Sets the oversampling ratio. Higher ratio leads to more accurate values but also takes more time.
-    pub fn set_magnetic_oversampling_ratio(
-        &mut self,
-        ratio: OverSamplingRatio,
-    ) -> Result<(), Error> {
+    pub fn set_oversampling_ratio(&mut self, ratio: OverSamplingRatio) -> Result<(), Error> {
         let reg = self.memory_read(0x02)?;
         let offset = 0;
         let mask = !((0b11 as u16) << offset);
         let new_reg = (reg & mask) | ((ratio as u16) << offset);
         self.memory_write(0x02, new_reg)?;
-        Ok(())
-    }
-
-    /// Sets the oversampling ratio. Higher ratio leads to more accurate values but also takes more time.
-    pub fn set_temperature_oversampling_ratio(
-        &mut self,
-        ratio: OverSamplingRatio,
-    ) -> Result<(), Error> {
-        let reg = self.memory_read(0x02)?;
-        let offset = 0;
-        let mask = !((0b11 as u16) << offset);
-        let new_reg = (reg & mask) | ((ratio as u16) << offset);
-        self.memory_write(0x02, new_reg)?;
+        self.oversampling_ratio = ratio;
         Ok(())
     }
 
@@ -222,7 +229,10 @@ where
     ) -> Result<(i16, i16, i16, i16), Error> {
         self.start_measurement().map_err(|_| Error::IO)?;
 
-        delay.delay_ms(300);
+        delay.delay_ms(
+            (TCONV[self.digital_filter as usize][self.oversampling_ratio as usize] * 1.03) as u32
+                + 2,
+        );
 
         self.collect_measurement()
     }
@@ -329,4 +339,3 @@ fn status_err(status: u8) -> Result<(), Error> {
         Ok(())
     }
 }
-
