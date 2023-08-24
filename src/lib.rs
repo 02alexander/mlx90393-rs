@@ -7,21 +7,25 @@
 //! # Examples 
 //! ## Using I2C
 //! ```no_run
-//! use embedded_hal::blocking::{i2c::WriteRead, delay::DelayMs};
+//! use embedded_hal::blocking::{delay::DelayMs, i2c::WriteRead};
 //! use mlx90393::{I2CInterface, Magnetometer};
 //! 
-//! pub fn example_i2c<E, WR>(i2c: &mut WR, delay: &mut impl DelayMs<u32>) -> Result<(), mlx90393::Error<E>>
+//! pub fn example_i2c<E, WR>(
+//!     i2c: &mut WR,
+//!     delay: &mut impl DelayMs<u32>,
+//! ) -> Result<(), mlx90393::Error<E>>
 //! where
 //!     WR: WriteRead<Error = E>,
 //! {
-//!     let i2c_interface = I2CInterface { i2c, address: 0x18 };
-//!     let mut sensor = Magnetometer::default_settings(i2c_interface)?;
-//!     sensor.set_resolution(mlx90393::Resolution::RES4)?;
-//!     sensor.set_oversampling_ratio(mlx90393::OverSamplingRatio::OSR8)?;
-//!     sensor.set_filter(mlx90393::DigitalFilter::DF8)?;
+//!     let mut i2c_interface = I2CInterface { i2c, address: 0x1a };
+//!     let mut sensor = Magnetometer::default_settings(&mut i2c_interface)?;
+//!     sensor.set_resolution(&mut i2c_interface, mlx90393::Resolution::RES4)?;
+//!     sensor.set_oversampling_ratio(&mut i2c_interface, mlx90393::OverSamplingRatio::OSR8)?;
+//!     sensor.set_filter(&mut i2c_interface, mlx90393::DigitalFilter::DF8)?;
 //! 
-//!     match sensor.do_measurement(delay) {
+//!     match sensor.do_measurement(&mut i2c_interface, delay) {
 //!         Ok((t, x, y, z)) => {
+//!             let angle = libm::atan2f(y as f32, x as f32);
 //!             // Do stuff with the data...
 //!         }
 //!         Err(e) => {
@@ -30,55 +34,16 @@
 //!     }
 //! 
 //!     // You can also start a measurement and collect it later.
-//!     sensor.start_measurement();
+//!     sensor.start_measurement(&mut i2c_interface)?;
 //! 
 //!     // Do other stuff
 //! 
 //!     // If it's not done it will return error and you will try to collect it later.
-//!     let (t, x, y, z) = sensor.collect_measurement()?;
+//!     let (t, x, y, z) = sensor.collect_measurement(&mut i2c_interface)?;
 //! 
 //!     Ok(())
 //! }
-//! ```
-//! ## Using SPI
-//! ```no_run
-//! use defmt::info;
-//! use embedded_hal::{blocking::{spi::Transfer, delay::DelayMs}, digital::v2::OutputPin};
-//! use mlx90393::{Magnetometer, SPIInterface};
 //! 
-//! pub fn example_spi<E, WR>(
-//!     spi: &mut WR,
-//!     delay: &mut impl DelayMs<u32>,
-//!     cs_pin: impl OutputPin,
-//! ) -> Result<(), mlx90393::Error<E>>
-//! where
-//!     WR: Transfer<u8, Error = E>,
-//! {
-//!     let spi_interface = SPIInterface { spi, cs: cs_pin };
-//!     let mut sensor = Magnetometer::default_settings(spi_interface)?;
-//!     sensor.set_resolution(mlx90393::Resolution::RES4)?;
-//!     sensor.set_oversampling_ratio(mlx90393::OverSamplingRatio::OSR8)?;
-//!     sensor.set_filter(mlx90393::DigitalFilter::DF8)?;
-//! 
-//!     match sensor.do_measurement(delay) {
-//!         Ok((t, x, y, z)) => {
-//!             // Do stuff with the data...
-//!         }
-//!         Err(e) => {
-//!             // Handle error.
-//!         }
-//!     }
-//! 
-//!     // You can also start a measurement and collect it later.
-//!     sensor.start_measurement();
-//! 
-//!     // Do other stuff
-//! 
-//!     // If it's not done it will return error and you will try to collect it later.
-//!     let (t, x, y, z) = sensor.collect_measurement()?;
-//! 
-//!     Ok(())
-//! }
 //! ```
 
 use embedded_hal::{blocking::delay::DelayMs, digital::v2::OutputPin};
@@ -190,8 +155,7 @@ pub struct SPIInterface<'a, D, C> {
     pub cs: C,
 }
 
-pub struct Magnetometer<P> {
-    interface: P,
+pub struct Magnetometer {
     gain: Gain,
     resolution_x: Resolution,
     resolution_y: Resolution,
@@ -232,15 +196,13 @@ where
     }
 }
 
-impl<P, E> Magnetometer<P>
+impl Magnetometer
 where
-    P: Tranceive<Error = E>,
 {
     /// This function assumes the memory all is zero except for the `HALLCONF` parameter.
     /// This is an invalid state and the settings should be changed before use.  
-    pub fn new_raw(protocol: P) -> Magnetometer<P> {
+    pub fn new_raw() -> Magnetometer {
         Magnetometer {
-            interface: protocol,
             gain: Gain::X5,
             resolution_x: Resolution::RES1,
             resolution_y: Resolution::RES1,
@@ -251,36 +213,46 @@ where
     }
 
     /// New magnetometer driver with some valid and reasonable settings.
-    pub fn default_settings(
-        protocol: P,
-    ) -> Result<Magnetometer<P>, Error<E>> {
-        let mut s = Self::new_raw(protocol);
-        s.set_gain(Gain::X5)?;
-        s.set_resolution(Resolution::RES4)?;
-        s.set_filter(DigitalFilter::DF3)?;
-        s.set_oversampling_ratio(OverSamplingRatio::OSR2)?;
+    pub fn default_settings<P, E>(
+        protocol: &mut P,
+    ) -> Result<Magnetometer, Error<E>>
+    where 
+        P: Tranceive<Error=E> 
+    {
+        let mut s = Self::new_raw();
+        s.set_gain(protocol, Gain::X5)?;
+        s.set_resolution(protocol, Resolution::RES4)?;
+        s.set_filter(protocol, DigitalFilter::DF3)?;
+        s.set_oversampling_ratio(protocol, OverSamplingRatio::OSR2)?;
         Ok(s)
     }
 
     /// Sets the resolution. The ADC gives a 19 bit value and the resolution
     /// determines which part goes into the u16 where Resolution::RES8 results in
     /// the most MSb being included.
-    pub fn set_resolution(&mut self, resolution: Resolution) -> Result<(), Error<E>> {
-        self.set_resolution_axis(Axis::X, resolution)?;
-        self.set_resolution_axis(Axis::Y, resolution)?;
-        self.set_resolution_axis(Axis::Z, resolution)?;
+    pub fn set_resolution<P, E>(&mut self, protocol: &mut P, resolution: Resolution) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E> 
+    {
+        self.set_resolution_axis(protocol, Axis::X, resolution)?;
+        self.set_resolution_axis(protocol, Axis::Y, resolution)?;
+        self.set_resolution_axis(protocol, Axis::Z, resolution)?;
         Ok(())
     }
 
     /// Sets the resolution. The ADC gives a 19 bit value and the resolution
     /// determines which part goes into the u16 where Resolution::RES8 results in
     /// the most MSb being included.
-    pub fn set_resolution_axis(
+    pub fn set_resolution_axis<P, E>(
         &mut self,
+        protocol: &mut P,
         axis: Axis,
         resolution: Resolution,
-    ) -> Result<(), Error<E>> {
-        let reg = self.memory_read(0x02)?;
+    ) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E> 
+    {
+        let reg = self.memory_read(protocol, 0x02)?;
         match axis {
             Axis::X => self.resolution_x = resolution,
             Axis::Y => self.resolution_y = resolution,
@@ -293,57 +265,72 @@ where
         };
         let mask = !((0b11_u16) << offset);
         let new_reg = (reg & mask) | ((resolution as u16) << offset);
-        self.memory_write(0x02, new_reg)?;
+        self.memory_write(protocol, 0x02, new_reg)?;
         Ok(())
     }
 
-    pub fn set_gain(&mut self, gain: Gain) -> Result<(), Error<E>> {
-        let reg = self.memory_read(0x02)?;
+    pub fn set_gain<P,E>(&mut self, protocol: &mut P, gain: Gain) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E>
+    {
+        let reg = self.memory_read(protocol, 0x02)?;
         let offset = 4;
         let mask = !((0b111_u16) << offset);
         let new_reg = (reg & mask) | ((gain as u16) << offset);
-        self.memory_write(0x00, new_reg)?;
+        self.memory_write(protocol, 0x00, new_reg)?;
         self.gain = gain;
         Ok(())
     }
 
     /// Sets the digital filter. Higher value on filter leads to more accurate values but also takes more time.
-    pub fn set_filter(&mut self, filter: DigitalFilter) -> Result<(), Error<E>> {
-        let reg = self.memory_read(0x02)?;
+    pub fn set_filter<P,E>(&mut self, protocol: &mut P, filter: DigitalFilter) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E> 
+    {
+        let reg = self.memory_read(protocol, 0x02)?;
         let offset = 2;
         let mask = !((0b1111_u16) << offset);
         let new_reg = (reg & mask) | ((filter as u16) << offset);
-        self.memory_write(0x02, new_reg)?;
+        self.memory_write(protocol, 0x02, new_reg)?;
         self.digital_filter = filter;
         Ok(())
     }
 
     /// Sets the oversampling ratio. Higher ratio leads to more accurate values but also takes more time.
-    pub fn set_oversampling_ratio(&mut self, ratio: OverSamplingRatio) -> Result<(), Error<E>> {
-        let reg = self.memory_read(0x02)?;
+    pub fn set_oversampling_ratio<P,E>(&mut self, protocol: &mut P, ratio: OverSamplingRatio) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E>  
+    {
+        let reg = self.memory_read(protocol, 0x02)?;
         let offset = 0;
         let mask = !((0b11_u16) << offset);
         let new_reg = (reg & mask) | ((ratio as u16) << offset);
-        self.memory_write(0x02, new_reg)?;
+        self.memory_write(protocol, 0x02, new_reg)?;
         self.oversampling_ratio = ratio;
         Ok(())
     }
 
     /// Starts a measurement.
-    pub fn start_measurement(&mut self) -> Result<(), Error<E>> {
+    pub fn start_measurement<P,E>(&mut self, protocol: &mut P) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E>
+    {
         let mut buffer = [0; 1];
         let cmd_byte = Command::SM as u8 | 0xf;
-        self.interface.tranceive(&[cmd_byte], &mut buffer)?;
+        protocol.tranceive(&[cmd_byte], &mut buffer)?;
 
         status_err(buffer[0])?;
         Ok(())
     }
 
     /// Collects the data from a measurement. `start_measurment` must be called before to start one.
-    pub fn collect_measurement(&mut self) -> Result<(i16, i16, i16, i16), Error<E>> {
+    pub fn collect_measurement<P,E>(&mut self, protocol: &mut P) -> Result<(i16, i16, i16, i16), Error<E>>
+    where 
+        P: Tranceive<Error=E>
+    {
         let mut buffer = [0; 9];
         let cmd_byte = Command::RM as u8 | 0xf;
-        self.interface.tranceive(&[cmd_byte], &mut buffer)?;
+        protocol.tranceive(&[cmd_byte], &mut buffer)?;
         status_err(buffer[0])?;
         let t = i16::from_be_bytes([buffer[1], buffer[2]]);
         let raw_x = i16::from_be_bytes([buffer[3], buffer[4]]);
@@ -357,55 +344,71 @@ where
 
     /// Starts and completes a measurement.
     /// Returns (t, x, y, z)
-    pub fn do_measurement(
+    pub fn do_measurement<P,E>(
         &mut self,
+        protocol: &mut P,
         delay: &mut impl DelayMs<u32>,
-    ) -> Result<(i16, i16, i16, i16), Error<E>> {
-        self.start_measurement()?;
+    ) -> Result<(i16, i16, i16, i16), Error<E>>
+    where 
+        P: Tranceive<Error=E>
+    {
+        self.start_measurement(protocol)?;
 
         delay.delay_ms(
             (TCONV[self.digital_filter as usize][self.oversampling_ratio as usize] * 1.03) as u32
                 + 2,
         );
 
-        self.collect_measurement()
+        self.collect_measurement(protocol)
     }
 
     /// Stores the current configuration into the non-volatile memory.
     /// NOTE: The non-volatime memory wasn't meant to be written to a lot
     /// so the number of write-cycles should be kept to a minimum.
-    pub fn store(&mut self) -> Result<(), Error<E>> {
+    pub fn store<P,E>(&mut self, protocol: &mut P) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E> 
+    {
         let mut buffer = [0; 1];
         let cmd_byte = Command::HS as u8;
-        self.interface.tranceive(&[cmd_byte], &mut buffer)?;
+        protocol.tranceive(&[cmd_byte], &mut buffer)?;
         status_err(buffer[0])?;
         Ok(())
     }
 
     /// Copies the configuration from the non-volatile memory to the
     /// volatile memory.
-    pub fn recall(&mut self) -> Result<(), Error<E>> {
+    pub fn recall<P,E>(&mut self, protocol: &mut P) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E>
+    {
         let cmd_byte = Command::HR as u8;
         let mut buffer = [0; 1];
-        self.interface.tranceive(&[cmd_byte], &mut buffer)?;
+        protocol.tranceive(&[cmd_byte], &mut buffer)?;
         status_err(buffer[0])?;
         Ok(())
     }
 
     /// Cancels the current measurement.
-    pub fn exit(&mut self) -> Result<(), Error<E>> {
+    pub fn exit<P,E>(&mut self, protocol: &mut P) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E>
+    {
         let cmd_byte = Command::EX as u8;
         let mut buffer = [0; 1];
-        self.interface.tranceive(&[cmd_byte], &mut buffer)?;
+        protocol.tranceive(&[cmd_byte], &mut buffer)?;
         status_err(buffer[0])?;
         Ok(())
     }
 
     /// Resets the device.
-    pub fn reset(&mut self) -> Result<(), Error<E>> {
+    pub fn reset<P,E>(&mut self, protocol: &mut P) -> Result<(), Error<E>>
+    where 
+        P: Tranceive<Error=E> 
+    {
         let cmd_byte = Command::RT as u8;
         let mut buffer = [0; 1];
-        self.interface.tranceive(&[cmd_byte], &mut buffer)?;
+        protocol.tranceive(&[cmd_byte], &mut buffer)?;
         status_err(buffer[0])?;
         Ok(())
     }
@@ -413,11 +416,14 @@ where
     /// Writes data to the specified address.
     /// Adressses 0x00..=0x09 are used for configuring the device
     /// but 0x0A..=0x1F is free to use.
-    pub fn memory_write(&mut self, mem_adress: u8, data: u16) -> Result<(), Error<E>> {
+    pub fn memory_write<P,E>(&mut self, protocol: &mut P, mem_adress: u8, data: u16) -> Result<(), Error<E>> 
+    where 
+        P: Tranceive<Error=E>
+    {
         let cmd_byte = Command::WR as u8;
         let shifted_address = mem_adress << 2;
         let mut buffer = [0; 1];
-        self.interface.tranceive(
+        protocol.tranceive(
             &[
                 cmd_byte,
                 (data >> 8) as u8,
@@ -434,11 +440,14 @@ where
     /// Reads data to the specified address.
     /// Adressses 0x00..=0x09 are used for configuring the device
     /// but 0x0A..=0x1F is free to use.
-    pub fn memory_read(&mut self, mem_adress: u8) -> Result<u16, Error<E>> {
+    pub fn memory_read<P,E>(&mut self, protocol: &mut P, mem_adress: u8) -> Result<u16, Error<E>>
+    where 
+        P: Tranceive<Error=E>
+    {
         let cmd_byte = Command::RR as u8;
         let shifted_address = mem_adress << 2;
         let mut buffer = [0; 3];
-        self.interface
+        protocol
             .tranceive(&[cmd_byte, shifted_address], &mut buffer)?;
         status_err(buffer[0])?;
         Ok(u16::from_be_bytes([buffer[1], buffer[2]]))
